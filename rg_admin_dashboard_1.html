@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RG Tribunal — Leaderboard Anti-Cheat</title>
+<style>
+  :root {
+    --bg: #0b0e13;
+    --panel: #12141a;
+    --line: #00bfff33;
+    --cyan: #00bfff;
+    --gold: #ffd700;
+    --danger: #ff5b5b;
+    --ok: #00ff66;
+    --text: #d7e3ec;
+    --muted: #6b7a88;
+    --mono: ui-monospace, "SF Mono", Consolas, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  header {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 12px 18px;
+    background: rgba(11,14,19,.95);
+    border-bottom: 1px solid var(--line);
+    backdrop-filter: blur(4px);
+  }
+  header h1 {
+    margin: 0;
+    font-family: "Arial Black", Arial, sans-serif;
+    font-size: 17px;
+    letter-spacing: .5px;
+    color: var(--cyan);
+  }
+  header h1 .sub { color: var(--muted); font-family: Arial; font-weight: normal; font-size: 12px; margin-left: 8px; }
+  main { max-width: 980px; margin: 0 auto; padding: 18px; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 16px;
+  }
+  .panel h2 {
+    margin: 0 0 10px;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--cyan);
+  }
+  button {
+    background: linear-gradient(180deg, #1c2b3a, #10181f);
+    color: #d7f3ff;
+    border: 1px solid #00bfff88;
+    border-radius: 6px;
+    padding: 7px 14px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--cyan); }
+  button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.danger { border-color: #ff5b5b88; }
+  button.danger:hover { border-color: var(--danger); }
+  input[type="text"], input[type="number"] {
+    background: #10181f;
+    border: 1px solid #00bfff55;
+    border-radius: 6px;
+    color: var(--text);
+    padding: 7px 10px;
+    font-size: 13px;
+  }
+  input:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .mono { font-family: var(--mono); font-size: 12px; word-break: break-all; }
+  .muted { color: var(--muted); }
+  .hidden { display: none !important; }
+
+  /* Suspect cards */
+  .card {
+    position: relative;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-bottom: 12px;
+    background: #0e1117;
+    overflow: hidden;
+  }
+  .card .names { font-weight: bold; font-size: 15px; }
+  .card .ids { margin: 4px 0 8px; }
+  .card .ids div { margin: 2px 0; }
+  .flags { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  .flag {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 20px;
+    border: 1px solid var(--gold);
+    color: var(--gold);
+    background: #ffd70011;
+  }
+  .flag.hard { border-color: var(--danger); color: var(--danger); background: #ff5b5b11; }
+  .entries { width: 100%; border-collapse: collapse; margin: 8px 0; font-family: var(--mono); font-size: 12px; }
+  .entries td { padding: 2px 10px 2px 0; border-bottom: 1px solid #ffffff0d; }
+  .entries td.num { color: var(--ok); }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+
+  /* Verdict stamp — the one loud thing on the page */
+  .stamp {
+    position: absolute;
+    top: 10px; right: 14px;
+    transform: rotate(-12deg) scale(1);
+    border: 3px solid var(--gold);
+    color: var(--gold);
+    font-family: "Arial Black", Arial, sans-serif;
+    font-size: 20px;
+    letter-spacing: 3px;
+    padding: 4px 14px;
+    border-radius: 4px;
+    pointer-events: none;
+    animation: stampIn .18s ease-out;
+  }
+  @keyframes stampIn {
+    from { transform: rotate(-12deg) scale(2.2); opacity: 0; }
+    to   { transform: rotate(-12deg) scale(1);   opacity: 1; }
+  }
+  @media (prefers-reduced-motion: reduce) { .stamp { animation: none; } }
+  .card.banned { opacity: .65; }
+
+  /* Blacklist chips */
+  .chip {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    border-bottom: 1px solid #ffffff0d;
+    padding: 5px 0;
+  }
+  .chip .note { color: var(--muted); font-size: 12px; }
+
+  #toast {
+    position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%);
+    background: #0e1117; border: 1px solid var(--cyan); border-radius: 8px;
+    padding: 9px 16px; font-size: 13px; opacity: 0; transition: opacity .2s;
+    pointer-events: none; max-width: 90vw;
+  }
+  #toast.show { opacity: 1; }
+  #toast.err { border-color: var(--danger); }
+
+  @media (max-width: 560px) {
+    header { flex-direction: column; align-items: flex-start; }
+    .actions button { flex: 1; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🛡️ RG TRIBUNAL <span class="sub">leaderboard anti-cheat</span></h1>
+  <div class="row">
+    <span id="whoami" class="muted mono"></span>
+    <button id="authBtn">Sign in with Google</button>
+  </div>
+</header>
+
+<main>
+  <div class="panel" id="scanPanel">
+    <h2>Scan</h2>
+    <div class="row">
+      <label for="threshold">MMR over</label>
+      <input type="number" id="threshold" value="20000" min="0" step="1000" style="width:110px;">
+      <label for="wrPct">or win rate over</label>
+      <input type="number" id="wrPct" value="90" min="50" max="100" style="width:70px;"> %
+      <label for="wrMin">(min</label>
+      <input type="number" id="wrMin" value="50" min="1" style="width:70px;"> <label>matches)</label>
+      <button id="scanBtn">Run scan</button>
+    </div>
+    <div class="muted" style="margin-top:8px;font-size:12px;">
+      Also flags: leaderboard entries with no script_submissions record, MMR that
+      doesn't match script_submissions, and names shared across multiple accounts.
+    </div>
+  </div>
+
+  <div class="panel hidden" id="resultsPanel">
+    <h2>Suspects <span id="suspectCount" class="muted"></span></h2>
+    <div id="results"></div>
+  </div>
+
+  <div class="panel" id="blacklistPanel">
+    <h2>Blacklist</h2>
+    <div id="blacklist" class="muted">Sign in and the current blacklist loads here.</div>
+  </div>
+
+  <div class="panel" id="configPanel">
+    <h2>Script versions</h2>
+    <div class="row">
+      <input type="text" id="versionsInput" placeholder="e.g. 12.0, 12.1" style="flex:1;min-width:200px;">
+      <button id="saveVersionsBtn">Save allowed versions</button>
+    </div>
+    <div class="muted" style="margin-top:6px;font-size:12px;">
+      Writes admin/config.allowedVersions. Removing a version force-updates
+      everyone still on it (their sync pauses until they update).
+    </div>
+  </div>
+</main>
+
+<div id="toast" role="status"></div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import {
+  getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged
+} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import {
+  getFirestore, collection, getDocs, doc, getDoc, setDoc, updateDoc, deleteDoc,
+  arrayUnion, arrayRemove, deleteField
+} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+const ADMIN_EMAIL = "underflagfg@gmail.com";
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyD29s2Jku_DZ42keIQAETgKg7HWt__QEwY",
+  authDomain: "rgleaderboard.firebaseapp.com",
+  projectId: "rgleaderboard",
+  storageBucket: "rgleaderboard.firebasestorage.app",
+  messagingSenderId: "247848634543",
+  appId: "1:247848634543:web:6a7e506d60544d46cc6c5a",
+};
+
+const app = initializeApp(FIREBASE_CONFIG);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+const $ = id => document.getElementById(id);
+let toastTimer = null;
+function toast(msg, isErr = false) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = "show" + (isErr ? " err" : "");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.className = "", 3200);
+}
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// ---------- Auth ----------
+$("authBtn").onclick = async () => {
+  if (auth.currentUser) { await signOut(auth); return; }
+  try { await signInWithPopup(auth, new GoogleAuthProvider()); }
+  catch (e) { toast("Sign-in failed: " + e.code, true); }
+};
+
+onAuthStateChanged(auth, user => {
+  if (user) {
+    $("whoami").textContent = user.email;
+    $("authBtn").textContent = "Sign out";
+    if (user.email !== ADMIN_EMAIL) {
+      toast(`Signed in as ${user.email} — bans and deletes need ${ADMIN_EMAIL}`, true);
+    }
+    loadBlacklist();
+    loadConfig();
+  } else {
+    $("whoami").textContent = "";
+    $("authBtn").textContent = "Sign in with Google";
+    $("blacklist").textContent = "Sign in and the current blacklist loads here.";
+  }
+});
+
+// ---------- Scan ----------
+let lbDocs = [];   // [{id, data}]
+let ssDocs = new Map(); // sourceUserId -> data
+let blacklistData = { userIds: [], deviceIds: [], notes: {} };
+
+$("scanBtn").onclick = runScan;
+
+async function runScan() {
+  const threshold = Number($("threshold").value) || 20000;
+  const wrPct = (Number($("wrPct").value) || 90) / 100;
+  const wrMin = Number($("wrMin").value) || 50;
+
+  $("scanBtn").disabled = true;
+  $("scanBtn").textContent = "Scanning…";
+  try {
+    const [lbSnap, ssSnap] = await Promise.all([
+      getDocs(collection(db, "leaderboard")),
+      getDocs(collection(db, "script_submissions")),
+    ]);
+    lbDocs = [];
+    lbSnap.forEach(d => lbDocs.push({ id: d.id, data: d.data() }));
+    ssDocs = new Map();
+    ssSnap.forEach(d => ssDocs.set(d.id, d.data()));
+
+    const suspects = analyze(threshold, wrPct, wrMin);
+    render(suspects);
+    toast(`Scanned ${lbDocs.length} leaderboard entries, ${ssDocs.size} submission records.`);
+  } catch (e) {
+    console.error(e);
+    toast("Scan failed: " + (e.code || e.message), true);
+  }
+  $("scanBtn").disabled = false;
+  $("scanBtn").textContent = "Run scan";
+}
+
+function analyze(threshold, wrPct, wrMin) {
+  // name -> Set(sourceUserId) per playlist for duplicate detection
+  const nameOwners = new Map();
+  for (const { data } of lbDocs) {
+    if (!data.sourceUserId || !data.name) continue;
+    const key = data.playlist + "|" + String(data.name).replace(/^\[[^\]]{2,4}\]\s*/, "").toLowerCase();
+    if (!nameOwners.has(key)) nameOwners.set(key, new Set());
+    nameOwners.get(key).add(data.sourceUserId);
+  }
+
+  const modeForPlaylist = { "1v1": "Competitive1v1", "2v2": "Competitive2v2", "3v3": "Competitive3v3" };
+  const suspects = new Map(); // sourceUserId -> record
+
+  const get = uid => {
+    if (!suspects.has(uid)) {
+      suspects.set(uid, { uid, names: new Set(), deviceIds: new Set(), entries: [], flags: [] });
+    }
+    return suspects.get(uid);
+  };
+
+  for (const { id, data } of lbDocs) {
+    const uid = data.sourceUserId;
+    if (!uid) continue; // Pal's curated entries — never touch
+
+    const hardFlags = [];
+    const softFlags = [];
+
+    if (data.playlist !== "wins" && typeof data.mmr === "number" && data.mmr >= threshold) {
+      hardFlags.push(`MMR ${data.mmr.toLocaleString()} in ${data.playlist}`);
+    }
+    if (data.playlist === "wins" && typeof data.wins === "number" && typeof data.matches === "number"
+        && data.matches >= wrMin && data.wins / data.matches >= wrPct) {
+      hardFlags.push(`${(100 * data.wins / data.matches).toFixed(1)}% win rate (${data.wins}/${data.matches})`);
+    }
+
+    const ss = ssDocs.get(uid);
+    if (!ss) {
+      hardFlags.push("no script_submissions record");
+    } else if (data.playlist !== "wins" && typeof data.mmr === "number") {
+      const mode = modeForPlaylist[data.playlist];
+      const ssRating = ss.ratings?.[mode];
+      if (typeof ssRating === "number" && ssRating !== data.mmr) {
+        hardFlags.push(`leaderboard ${data.mmr} ≠ submissions ${ssRating} (${data.playlist})`);
+      }
+    }
+
+    const nameKey = data.playlist + "|" + String(data.name ?? "").replace(/^\[[^\]]{2,4}\]\s*/, "").toLowerCase();
+    const owners = nameOwners.get(nameKey);
+    if (owners && owners.size > 1) {
+      softFlags.push(`name shared with ${owners.size - 1} other account${owners.size > 2 ? "s" : ""}`);
+    }
+
+    if (hardFlags.length > 0) {
+      const rec = get(uid);
+      if (data.name) rec.names.add(data.name);
+      if (data.deviceId) rec.deviceIds.add(data.deviceId);
+      rec.entries.push({ docId: id, ...data });
+      for (const f of hardFlags) if (!rec.flags.some(x => x.text === f)) rec.flags.push({ text: f, hard: true });
+      for (const f of softFlags) if (!rec.flags.some(x => x.text === f)) rec.flags.push({ text: f, hard: false });
+    }
+  }
+
+  // Enrich from script_submissions (deviceId, in-game nickname)
+  for (const rec of suspects.values()) {
+    const ss = ssDocs.get(rec.uid);
+    if (ss) {
+      if (ss.deviceId) rec.deviceIds.add(ss.deviceId);
+      if (ss.nickname) rec.nickname = ss.nickname;
+      // include their OTHER leaderboard entries for context
+      for (const { id, data } of lbDocs) {
+        if (data.sourceUserId === rec.uid && !rec.entries.some(e => e.docId === id)) {
+          rec.entries.push({ docId: id, ...data });
+        }
+      }
+    }
+  }
+
+  return [...suspects.values()].sort((a, b) => b.flags.filter(f => f.hard).length - a.flags.filter(f => f.hard).length);
+}
+
+// ---------- Render ----------
+function render(suspects) {
+  $("resultsPanel").classList.remove("hidden");
+  $("suspectCount").textContent = suspects.length ? `(${suspects.length})` : "";
+  const box = $("results");
+  box.innerHTML = "";
+
+  if (suspects.length === 0) {
+    box.innerHTML = `<div class="muted">Nothing suspicious at this threshold. Lower it or check back later.</div>`;
+    return;
+  }
+
+  for (const s of suspects) {
+    const alreadyBanned = blacklistData.userIds.includes(s.uid);
+    const card = document.createElement("div");
+    card.className = "card" + (alreadyBanned ? " banned" : "");
+    const deviceId = [...s.deviceIds][0] ?? null;
+
+    card.innerHTML = `
+      ${alreadyBanned ? `<div class="stamp">BANNED</div>` : ""}
+      <div class="names">${esc([...s.names].join(", ") || "(no display name)")}</div>
+      <div class="ids">
+        <div><span class="muted">account</span> <span class="mono">${esc(s.uid)}</span></div>
+        <div><span class="muted">device</span> <span class="mono">${deviceId ? esc(deviceId) : "— (pre-v11.9 writes, none recorded)"}</span></div>
+        ${s.nickname ? `<div><span class="muted">in-game nick</span> <span class="mono">${esc(String(s.nickname).slice(0, 60))}</span></div>` : ""}
+      </div>
+      <div class="flags">${s.flags.map(f => `<span class="flag${f.hard ? " hard" : ""}">${esc(f.text)}</span>`).join("")}</div>
+      <table class="entries">${s.entries.map(e => `
+        <tr>
+          <td>${esc(e.playlist)}</td>
+          <td class="num">${e.playlist === "wins" ? `${e.wins}/${e.matches}` : (e.mmr?.toLocaleString?.() ?? "")}</td>
+          <td class="muted">${esc(e.name ?? "")}</td>
+        </tr>`).join("")}
+      </table>
+      <div class="row">
+        <input type="text" class="noteInput" placeholder="Ban note (alias, evidence)" style="flex:1;min-width:180px;"
+               value="${esc([...s.names][0] ?? "")} - ${esc(s.flags.filter(f => f.hard).map(f => f.text)[0] ?? "")}">
+      </div>
+      <div class="actions">
+        <button class="danger banUser" ${alreadyBanned ? "disabled" : ""}>Ban account</button>
+        <button class="danger banDevice" ${!deviceId || blacklistData.deviceIds.includes(deviceId) ? "disabled" : ""}>Ban device</button>
+        <button class="danger deleteDocs">Delete their entries (${s.entries.length + (ssDocs.has(s.uid) ? 1 : 0)} docs)</button>
+      </div>
+    `;
+
+    card.querySelector(".banUser").onclick = async ev => {
+      const note = card.querySelector(".noteInput").value.trim();
+      await banId("userIds", s.uid, note);
+      ev.target.disabled = true;
+      card.classList.add("banned");
+      if (!card.querySelector(".stamp")) {
+        const st = document.createElement("div");
+        st.className = "stamp"; st.textContent = "BANNED";
+        card.prepend(st);
+      }
+    };
+    card.querySelector(".banDevice").onclick = async ev => {
+      const note = card.querySelector(".noteInput").value.trim();
+      await banId("deviceIds", deviceId, note ? note + " (device)" : "");
+      ev.target.disabled = true;
+    };
+    card.querySelector(".deleteDocs").onclick = async ev => {
+      if (!confirm(`Delete ${s.entries.length} leaderboard doc(s)${ssDocs.has(s.uid) ? " + 1 submissions doc" : ""} for ${s.uid}?`)) return;
+      ev.target.disabled = true;
+      try {
+        for (const e of s.entries) await deleteDoc(doc(db, "leaderboard", e.docId));
+        if (ssDocs.has(s.uid)) await deleteDoc(doc(db, "script_submissions", s.uid));
+        toast("Entries deleted. Re-run the scan to refresh.");
+      } catch (err) {
+        console.error(err);
+        toast("Delete failed: " + (err.code || err.message), true);
+        ev.target.disabled = false;
+      }
+    };
+
+    box.appendChild(card);
+  }
+}
+
+// ---------- Blacklist ----------
+async function banId(field, value, note) {
+  if (!value) return;
+  try {
+    const ref = doc(db, "admin", "blacklist");
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+      await setDoc(ref, { userIds: [], deviceIds: [], notes: {} });
+    }
+    const payload = { [field]: arrayUnion(value) };
+    if (note) payload[`notes.${value}`] = note;
+    await updateDoc(ref, payload);
+    toast(`Added to ${field}. Their next write gets rejected.`);
+    await loadBlacklist();
+  } catch (e) {
+    console.error(e);
+    toast("Blacklist write failed: " + (e.code || e.message), true);
+  }
+}
+
+async function loadBlacklist() {
+  try {
+    const snap = await getDoc(doc(db, "admin", "blacklist"));
+    if (!snap.exists()) {
+      $("blacklist").innerHTML = `<div class="row"><span class="muted">No blacklist doc yet.</span>
+        <button id="initBl">Create it</button></div>`;
+      $("initBl").onclick = async () => {
+        await setDoc(doc(db, "admin", "blacklist"), { userIds: [], deviceIds: [], notes: {} });
+        loadBlacklist();
+      };
+      return;
+    }
+    blacklistData = { userIds: [], deviceIds: [], notes: {}, ...snap.data() };
+    const rows = [];
+    for (const [field, label] of [["userIds", "account"], ["deviceIds", "device"]]) {
+      for (const id of blacklistData[field] ?? []) {
+        rows.push(`
+          <div class="chip">
+            <span><span class="muted">${label}</span> <span class="mono">${esc(id)}</span>
+              <span class="note">${esc(blacklistData.notes?.[id] ?? "")}</span></span>
+            <button class="unban" data-field="${field}" data-id="${esc(id)}">Remove</button>
+          </div>`);
+      }
+    }
+    $("blacklist").innerHTML = rows.join("") || `<span class="muted">Blacklist is empty.</span>`;
+    $("blacklist").querySelectorAll(".unban").forEach(b => b.onclick = async () => {
+      const ref = doc(db, "admin", "blacklist");
+      await updateDoc(ref, {
+        [b.dataset.field]: arrayRemove(b.dataset.id),
+        [`notes.${b.dataset.id}`]: deleteField(),
+      });
+      toast("Removed from blacklist.");
+      loadBlacklist();
+    });
+  } catch (e) {
+    console.error(e);
+    $("blacklist").textContent = "Couldn't load blacklist: " + (e.code || e.message);
+  }
+}
+
+// ---------- Version config ----------
+async function loadConfig() {
+  try {
+    const snap = await getDoc(doc(db, "admin", "config"));
+    if (snap.exists()) $("versionsInput").value = (snap.data().allowedVersions ?? []).join(", ");
+  } catch (e) { /* fine */ }
+}
+$("saveVersionsBtn").onclick = async () => {
+  const versions = $("versionsInput").value.split(",").map(v => v.trim()).filter(Boolean);
+  if (versions.length === 0) { toast("List at least one version — an empty list blocks everyone.", true); return; }
+  try {
+    await setDoc(doc(db, "admin", "config"), { allowedVersions: versions }, { merge: true });
+    toast(`Allowed versions: ${versions.join(", ")}`);
+  } catch (e) {
+    console.error(e);
+    toast("Save failed: " + (e.code || e.message), true);
+  }
+};
+</script>
+</body>
+</html>

@@ -236,14 +236,15 @@
   </div>
 
   <div class="panel" id="configPanel">
-    <h2>Script versions</h2>
+    <h2>Minimum script version</h2>
     <div class="row">
-      <input type="text" id="versionsInput" placeholder="e.g. 12.0, 12.1" style="flex:1;min-width:200px;">
-      <button id="saveVersionsBtn">Save allowed versions</button>
+      <input type="number" id="versionsInput" step="0.1" min="0" placeholder="e.g. 11.1" style="width:140px;">
+      <button id="saveVersionsBtn">Save minimum version</button>
     </div>
     <div class="muted" style="margin-top:6px;font-size:12px;">
-      Writes admin/config.allowedVersions. Removing a version force-updates
-      everyone still on it (their sync pauses until they update).
+      Allows that version and everything after (11.1 allows 11.1, 11.2, 12.0…).
+      Anything below gets rejected and shown an update banner. Writes
+      admin/blacklist.minVersion. Empty = gate off.
     </div>
   </div>
 </main>
@@ -747,26 +748,29 @@ $("purgeDeleteBtn").onclick = async () => {
 // ---------- Version config ----------
 async function loadConfig() {
   try {
-    // Version list lives on admin/blacklist now (shares a read with the
-    // blacklist check server-side). Fall back to legacy admin/config.
+    // minVersion lives on admin/blacklist (shares a read with the blacklist
+    // check server-side). Numeric: X allows X and everything after.
     const snap = await getDoc(doc(db, "admin", "blacklist"));
-    if (snap.exists() && Array.isArray(snap.data().allowedVersions)) {
-      $("versionsInput").value = snap.data().allowedVersions.join(", ");
-      return;
+    if (snap.exists() && typeof snap.data().minVersion === "number") {
+      $("versionsInput").value = snap.data().minVersion;
     }
-    const legacy = await getDoc(doc(db, "admin", "config"));
-    if (legacy.exists()) $("versionsInput").value = (legacy.data().allowedVersions ?? []).join(", ");
   } catch (e) { /* fine */ }
 }
 $("saveVersionsBtn").onclick = async () => {
-  const versions = $("versionsInput").value.split(",").map(v => v.trim()).filter(Boolean);
-  if (versions.length === 0) { toast("List at least one version — an empty list blocks everyone.", true); return; }
+  const raw = $("versionsInput").value.trim();
   try {
-    // Write to admin/blacklist (rules + v12.1 clients read this) AND to the
-    // legacy admin/config (v12.0 clients' update banner reads that path).
-    await setDoc(doc(db, "admin", "blacklist"), { allowedVersions: versions }, { merge: true });
-    await setDoc(doc(db, "admin", "config"), { allowedVersions: versions }, { merge: true });
-    toast(`Allowed versions: ${versions.join(", ")}`);
+    const ref = doc(db, "admin", "blacklist");
+    const snap = await getDoc(ref);
+    if (!snap.exists()) await setDoc(ref, { userIds: [], deviceIds: [], notes: {} });
+    if (raw === "") {
+      await updateDoc(ref, { minVersion: deleteField() });
+      toast("Version gate turned OFF — all script versions allowed.");
+      return;
+    }
+    const minV = parseFloat(raw);
+    if (!Number.isFinite(minV) || minV < 0) { toast("Enter a version number like 11.1.", true); return; }
+    await updateDoc(ref, { minVersion: minV });
+    toast(`Minimum version set: ${minV} and everything after is allowed.`);
   } catch (e) {
     console.error(e);
     toast("Save failed: " + (e.code || e.message), true);

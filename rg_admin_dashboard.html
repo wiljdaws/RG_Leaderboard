@@ -221,7 +221,7 @@ import {
   arrayUnion, arrayRemove, deleteField
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
-const ADMIN_EMAIL = "underflagfg@gmail.com";
+const ADMIN_EMAILS = ["underflagfg@gmail.com", "therootedengineer@gmail.com"];
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyD29s2Jku_DZ42keIQAETgKg7HWt__QEwY",
   authDomain: "rgleaderboard.firebaseapp.com",
@@ -258,8 +258,8 @@ onAuthStateChanged(auth, user => {
   if (user) {
     $("whoami").textContent = user.email;
     $("authBtn").textContent = "Sign out";
-    if (user.email !== ADMIN_EMAIL) {
-      toast(`Signed in as ${user.email} — bans and deletes need ${ADMIN_EMAIL}`, true);
+    if (!ADMIN_EMAILS.includes(user.email)) {
+      toast(`Signed in as ${user.email} — bans and deletes need an admin account`, true);
     }
     loadBlacklist();
     loadConfig();

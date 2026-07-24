@@ -197,11 +197,19 @@
   </div>
 
   <div class="panel" id="purgePanel">
-    <h2>Purge known IDs</h2>
+    <h2>Purge known cheaters</h2>
     <div class="muted" style="font-size:12px;margin-bottom:8px;">
-      Paste sourceUserIds (one per line). Preview shows every leaderboard and
-      submission doc found for them. Nothing is deleted until you preview, then
-      confirm. Pre-filled with the IDs we already flagged.
+      Match by sourceUserId OR by display name. Preview shows every leaderboard
+      and submission doc found, with MMR/wins so you can confirm each is junk.
+      Nothing is deleted until you preview, then confirm.
+    </div>
+    <div class="row" style="margin-bottom:8px;">
+      <label style="font-size:12px;display:flex;align-items:center;gap:6px;">
+        <input type="radio" name="purgeMode" value="id" checked> by sourceUserId
+      </label>
+      <label style="font-size:12px;display:flex;align-items:center;gap:6px;">
+        <input type="radio" name="purgeMode" value="name"> by display name
+      </label>
     </div>
     <textarea id="purgeIds" rows="7" style="width:100%;box-sizing:border-box;background:#10181f;border:1px solid #00bfff55;border-radius:6px;color:var(--text);font-family:var(--mono);font-size:12px;padding:8px;">0XXGRGiXJFCe6yUkqhA9eCUFfPix
 0QmgVx9LwWLz1H0teU9fhzaBXemB
@@ -216,11 +224,12 @@
 7oSwys6ZDRPaGAfmZuquj9BA7MMg
 8xBqiQdue4ZURTGcsFp5A8cXp5xr
 9hGc7spTPe1HTzxKLWTbLVcCvN3m</textarea>
+    <div class="muted" id="purgeModeHint" style="font-size:11px;margin-top:4px;">One sourceUserId per line.</div>
     <div class="row" style="margin-top:10px;">
       <button id="purgePreviewBtn">Preview matches</button>
       <button id="purgeDeleteBtn" class="danger" disabled>Delete all shown</button>
       <label style="font-size:12px;display:flex;align-items:center;gap:6px;">
-        <input type="checkbox" id="purgeAlsoBan" checked> also blacklist these IDs
+        <input type="checkbox" id="purgeAlsoBan" checked> also blacklist matched accounts
       </label>
     </div>
     <div id="purgePreview" style="margin-top:12px;"></div>
@@ -554,19 +563,40 @@ async function loadBlacklist() {
   }
 }
 
-// ---------- Purge known IDs ----------
-let purgeTargets = null; // { lbDocIds: [], ssIds: [], ids: [] } set by preview
+// ---------- Purge known cheaters ----------
+let purgeTargets = null; // { lbDocIds, ssIds, ids, names } set by preview
 
-function parsePurgeIds() {
+function purgeMode() {
+  return document.querySelector('input[name="purgeMode"]:checked').value;
+}
+
+// Update the hint when switching modes.
+document.querySelectorAll('input[name="purgeMode"]').forEach(r => {
+  r.onchange = () => {
+    $("purgeModeHint").textContent = purgeMode() === "name"
+      ? "One display name per line (clan tags ignored). Matches leaderboard entries by name."
+      : "One sourceUserId per line.";
+    $("purgeDeleteBtn").disabled = true;
+    purgeTargets = null;
+    $("purgePreview").innerHTML = "";
+  };
+});
+
+function parsePurgeLines() {
   return [...new Set(
-    $("purgeIds").value.split(/\s+/).map(s => s.trim()).filter(Boolean)
+    $("purgeIds").value.split(/\r?\n/).map(s => s.trim()).filter(Boolean)
   )];
 }
 
+// Strip a leading [TAG] clan prefix and lowercase, for name comparison.
+function normName(s) {
+  return String(s ?? "").replace(/^\[[^\]]{2,4}\]\s*/, "").trim().toLowerCase();
+}
+
 $("purgePreviewBtn").onclick = async () => {
-  const ids = parsePurgeIds();
-  if (ids.length === 0) { toast("Paste at least one ID.", true); return; }
-  const idSet = new Set(ids);
+  const lines = parsePurgeLines();
+  if (lines.length === 0) { toast("Paste at least one line.", true); return; }
+  const mode = purgeMode();
 
   $("purgePreviewBtn").disabled = true;
   $("purgePreviewBtn").textContent = "Scanning…";
@@ -576,40 +606,45 @@ $("purgePreviewBtn").onclick = async () => {
       getDocs(collection(db, "script_submissions")),
     ]);
 
-    const lbMatches = [];
-    lbSnap.forEach(d => {
-      const data = d.data();
-      if (data.sourceUserId && idSet.has(data.sourceUserId)) {
-        lbMatches.push({ docId: d.id, ...data });
-      }
-    });
+    let lbMatches = [];
+    if (mode === "id") {
+      const idSet = new Set(lines);
+      lbSnap.forEach(d => {
+        const data = d.data();
+        if (data.sourceUserId && idSet.has(data.sourceUserId)) lbMatches.push({ docId: d.id, ...data });
+      });
+    } else {
+      // name mode: match leaderboard docs whose (tag-stripped) name is in the list
+      const nameSet = new Set(lines.map(normName));
+      lbSnap.forEach(d => {
+        const data = d.data();
+        if (data.name && nameSet.has(normName(data.name))) lbMatches.push({ docId: d.id, ...data });
+      });
+    }
+
+    // Collect the sourceUserIds these leaderboard docs belong to, then pull
+    // matching submission docs by those IDs (plus, in id mode, the pasted IDs).
+    const idSet = new Set(lbMatches.map(m => m.sourceUserId).filter(Boolean));
+    if (mode === "id") lines.forEach(id => idSet.add(id));
+
     const ssMatches = [];
     ssSnap.forEach(d => { if (idSet.has(d.id)) ssMatches.push({ docId: d.id, ...d.data() }); });
+
+    // Distinct display names for the confirm dialog.
+    const nameSet = new Set();
+    for (const m of lbMatches) if (m.name) nameSet.add(String(m.name).replace(/^\[[^\]]{2,4}\]\s*/, "").trim());
+    for (const m of ssMatches) if (m.displayName) nameSet.add(String(m.displayName).trim());
 
     purgeTargets = {
       lbDocIds: lbMatches.map(m => m.docId),
       ssIds: ssMatches.map(m => m.docId),
-      ids,
+      ids: [...idSet],
+      names: [...nameSet].filter(Boolean).sort(),
     };
-
-    // Collect the distinct display names tied to these IDs, so the delete
-    // confirmation names who's being removed instead of just a count. Strip
-    // any [TAG] clan prefix so "[KING] EZ" and "EZ" don't both show.
-    const nameSet = new Set();
-    for (const m of lbMatches) {
-      if (m.name) nameSet.add(String(m.name).replace(/^\[[^\]]{2,4}\]\s*/, "").trim());
-    }
-    for (const m of ssMatches) {
-      if (m.displayName) nameSet.add(String(m.displayName).trim());
-    }
-    purgeTargets.names = [...nameSet].filter(Boolean).sort();
-
-    const foundIds = new Set([...lbMatches.map(m => m.sourceUserId), ...ssMatches.map(m => m.docId)]);
-    const notFound = ids.filter(id => !foundIds.has(id));
 
     const rows = lbMatches.map(m => `
       <tr>
-        <td class="mono">${esc(m.sourceUserId)}</td>
+        <td class="mono">${esc(m.sourceUserId ?? "(none)")}</td>
         <td>leaderboard</td>
         <td>${esc(m.playlist ?? "")}</td>
         <td class="num">${m.playlist === "wins" ? `${m.wins}/${m.matches}` : (m.mmr?.toLocaleString?.() ?? "")}</td>
@@ -623,23 +658,21 @@ $("purgePreviewBtn").onclick = async () => {
         <td class="muted">${esc(String(m.nickname ?? "").slice(0, 40))}</td>
       </tr>`).join("");
 
+    const total = lbMatches.length + ssMatches.length;
     $("purgePreview").innerHTML = `
       <div style="margin-bottom:6px;">
-        Found <b>${lbMatches.length}</b> leaderboard + <b>${ssMatches.length}</b> submission docs
-        across <b>${foundIds.size}</b> of ${ids.length} IDs.
-        ${notFound.length ? `<div class="muted" style="font-size:11px;margin-top:4px;">No docs for ${notFound.length} ID(s) — already clean or never existed.</div>` : ""}
+        Found <b>${lbMatches.length}</b> leaderboard + <b>${ssMatches.length}</b> submission docs,
+        across <b>${idSet.size}</b> account(s).
       </div>
-      ${(lbMatches.length + ssMatches.length) > 0
+      ${total > 0
         ? `<table class="entries"><thead><tr class="muted">
-             <td>ID</td><td>where</td><td>playlist</td><td>value</td><td>name</td>
+             <td>account</td><td>where</td><td>playlist</td><td>value</td><td>name</td>
            </tr></thead>${rows}</table>`
-        : `<div class="muted">Nothing to delete — none of these IDs have docs.</div>`}
+        : `<div class="muted">No matching docs found.</div>`}
     `;
-
-    const total = lbMatches.length + ssMatches.length;
     $("purgeDeleteBtn").disabled = total === 0;
     $("purgeDeleteBtn").textContent = total > 0 ? `Delete all shown (${total} docs)` : "Delete all shown";
-    if (total > 0) toast(`Preview ready: ${total} docs. Review, then Delete all shown.`);
+    if (total > 0) toast(`Preview: ${total} docs across ${idSet.size} account(s). Review, then delete.`);
   } catch (e) {
     console.error(e);
     toast("Preview failed: " + (e.code || e.message), true);
@@ -654,13 +687,11 @@ $("purgeDeleteBtn").onclick = async () => {
   if (total === 0) return;
 
   const names = purgeTargets.names ?? [];
-  const nameList = names.length
-    ? names.map(n => `  • ${n}`).join("\n")
-    : "  (no display names found on these docs)";
+  const nameList = names.length ? names.map(n => `  • ${n}`).join("\n") : "  (no display names found)";
   const confirmMsg =
     `Permanently delete these ${names.length} player${names.length === 1 ? "" : "s"}?\n\n` +
     `${nameList}\n\n` +
-    `That's ${total} docs total (${purgeTargets.lbDocIds.length} leaderboard + ${purgeTargets.ssIds.length} submissions). This can't be undone.`;
+    `That's ${total} docs (${purgeTargets.lbDocIds.length} leaderboard + ${purgeTargets.ssIds.length} submissions) across ${purgeTargets.ids.length} account(s). Can't be undone.`;
   if (!confirm(confirmMsg)) return;
 
   $("purgeDeleteBtn").disabled = true;
@@ -676,8 +707,7 @@ $("purgeDeleteBtn").onclick = async () => {
       catch (e) { failed++; console.error("ss delete failed", ssId, e); }
     }
 
-    // Optionally blacklist every pasted ID so they can't just resubmit.
-    if ($("purgeAlsoBan").checked) {
+    if ($("purgeAlsoBan").checked && purgeTargets.ids.length > 0) {
       const ref = doc(db, "admin", "blacklist");
       const snap = await getDoc(ref);
       if (!snap.exists()) await setDoc(ref, { userIds: [], deviceIds: [], notes: {} });
@@ -688,8 +718,8 @@ $("purgeDeleteBtn").onclick = async () => {
       await loadBlacklist();
     }
 
-    toast(`Deleted ${done} docs${failed ? `, ${failed} failed (see console)` : ""}${$("purgeAlsoBan").checked ? ", IDs blacklisted" : ""}.`, failed > 0);
-    $("purgePreview").innerHTML = `<div class="muted">Purge complete. Deleted ${done}${failed ? `, ${failed} failed` : ""}. Re-preview to confirm they're gone.</div>`;
+    toast(`Deleted ${done} docs${failed ? `, ${failed} failed (console)` : ""}${$("purgeAlsoBan").checked ? ", accounts blacklisted" : ""}.`, failed > 0);
+    $("purgePreview").innerHTML = `<div class="muted">Purge complete. Deleted ${done}${failed ? `, ${failed} failed` : ""}. Re-preview to confirm.</div>`;
     purgeTargets = null;
     $("purgeDeleteBtn").textContent = "Delete all shown";
   } catch (e) {

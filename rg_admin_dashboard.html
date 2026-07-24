@@ -196,6 +196,36 @@
     <div id="blacklist" class="muted">Sign in and the current blacklist loads here.</div>
   </div>
 
+  <div class="panel" id="purgePanel">
+    <h2>Purge known IDs</h2>
+    <div class="muted" style="font-size:12px;margin-bottom:8px;">
+      Paste sourceUserIds (one per line). Preview shows every leaderboard and
+      submission doc found for them. Nothing is deleted until you preview, then
+      confirm. Pre-filled with the IDs we already flagged.
+    </div>
+    <textarea id="purgeIds" rows="7" style="width:100%;box-sizing:border-box;background:#10181f;border:1px solid #00bfff55;border-radius:6px;color:var(--text);font-family:var(--mono);font-size:12px;padding:8px;">0XXGRGiXJFCe6yUkqhA9eCUFfPix
+0QmgVx9LwWLz1H0teU9fhzaBXemB
+1HjECRZwC1esyjKj2jypY2ZGpnRS
+1aa4ElOsxgl23BvSml5pDcPjFjCk
+1dsfSucABlWY2dSl3RTkKX6MLPE2
+2OqMjdYoODFHOlOFJwQyk2YFK5Zx
+2H1nJFEsxyBNGSoOUI8nBqqDBlaf
+2n93W9svSnO1plsW0Lf8wSl6Bvku
+42NjdLbqjRiq2IsoXHtGDy8OWmHy
+4FUBlYhVIttD7owXDSwP6V6bZM9M
+7oSwys6ZDRPaGAfmZuquj9BA7MMg
+8xBqiQdue4ZURTGcsFp5A8cXp5xr
+9hGc7spTPe1HTzxKLWTbLVcCvN3m</textarea>
+    <div class="row" style="margin-top:10px;">
+      <button id="purgePreviewBtn">Preview matches</button>
+      <button id="purgeDeleteBtn" class="danger" disabled>Delete all shown</button>
+      <label style="font-size:12px;display:flex;align-items:center;gap:6px;">
+        <input type="checkbox" id="purgeAlsoBan" checked> also blacklist these IDs
+      </label>
+    </div>
+    <div id="purgePreview" style="margin-top:12px;"></div>
+  </div>
+
   <div class="panel" id="configPanel">
     <h2>Script versions</h2>
     <div class="row">
@@ -523,6 +553,152 @@ async function loadBlacklist() {
     $("blacklist").textContent = "Couldn't load blacklist: " + (e.code || e.message);
   }
 }
+
+// ---------- Purge known IDs ----------
+let purgeTargets = null; // { lbDocIds: [], ssIds: [], ids: [] } set by preview
+
+function parsePurgeIds() {
+  return [...new Set(
+    $("purgeIds").value.split(/\s+/).map(s => s.trim()).filter(Boolean)
+  )];
+}
+
+$("purgePreviewBtn").onclick = async () => {
+  const ids = parsePurgeIds();
+  if (ids.length === 0) { toast("Paste at least one ID.", true); return; }
+  const idSet = new Set(ids);
+
+  $("purgePreviewBtn").disabled = true;
+  $("purgePreviewBtn").textContent = "Scanning…";
+  try {
+    const [lbSnap, ssSnap] = await Promise.all([
+      getDocs(collection(db, "leaderboard")),
+      getDocs(collection(db, "script_submissions")),
+    ]);
+
+    const lbMatches = [];
+    lbSnap.forEach(d => {
+      const data = d.data();
+      if (data.sourceUserId && idSet.has(data.sourceUserId)) {
+        lbMatches.push({ docId: d.id, ...data });
+      }
+    });
+    const ssMatches = [];
+    ssSnap.forEach(d => { if (idSet.has(d.id)) ssMatches.push({ docId: d.id, ...d.data() }); });
+
+    purgeTargets = {
+      lbDocIds: lbMatches.map(m => m.docId),
+      ssIds: ssMatches.map(m => m.docId),
+      ids,
+    };
+
+    // Collect the distinct display names tied to these IDs, so the delete
+    // confirmation names who's being removed instead of just a count. Strip
+    // any [TAG] clan prefix so "[KING] EZ" and "EZ" don't both show.
+    const nameSet = new Set();
+    for (const m of lbMatches) {
+      if (m.name) nameSet.add(String(m.name).replace(/^\[[^\]]{2,4}\]\s*/, "").trim());
+    }
+    for (const m of ssMatches) {
+      if (m.displayName) nameSet.add(String(m.displayName).trim());
+    }
+    purgeTargets.names = [...nameSet].filter(Boolean).sort();
+
+    const foundIds = new Set([...lbMatches.map(m => m.sourceUserId), ...ssMatches.map(m => m.docId)]);
+    const notFound = ids.filter(id => !foundIds.has(id));
+
+    const rows = lbMatches.map(m => `
+      <tr>
+        <td class="mono">${esc(m.sourceUserId)}</td>
+        <td>leaderboard</td>
+        <td>${esc(m.playlist ?? "")}</td>
+        <td class="num">${m.playlist === "wins" ? `${m.wins}/${m.matches}` : (m.mmr?.toLocaleString?.() ?? "")}</td>
+        <td class="muted">${esc(m.name ?? "")}</td>
+      </tr>`).join("")
+      + ssMatches.map(m => `
+      <tr>
+        <td class="mono">${esc(m.docId)}</td>
+        <td>submission</td>
+        <td colspan="2" class="muted">${esc(m.displayName ?? "")}</td>
+        <td class="muted">${esc(String(m.nickname ?? "").slice(0, 40))}</td>
+      </tr>`).join("");
+
+    $("purgePreview").innerHTML = `
+      <div style="margin-bottom:6px;">
+        Found <b>${lbMatches.length}</b> leaderboard + <b>${ssMatches.length}</b> submission docs
+        across <b>${foundIds.size}</b> of ${ids.length} IDs.
+        ${notFound.length ? `<div class="muted" style="font-size:11px;margin-top:4px;">No docs for ${notFound.length} ID(s) — already clean or never existed.</div>` : ""}
+      </div>
+      ${(lbMatches.length + ssMatches.length) > 0
+        ? `<table class="entries"><thead><tr class="muted">
+             <td>ID</td><td>where</td><td>playlist</td><td>value</td><td>name</td>
+           </tr></thead>${rows}</table>`
+        : `<div class="muted">Nothing to delete — none of these IDs have docs.</div>`}
+    `;
+
+    const total = lbMatches.length + ssMatches.length;
+    $("purgeDeleteBtn").disabled = total === 0;
+    $("purgeDeleteBtn").textContent = total > 0 ? `Delete all shown (${total} docs)` : "Delete all shown";
+    if (total > 0) toast(`Preview ready: ${total} docs. Review, then Delete all shown.`);
+  } catch (e) {
+    console.error(e);
+    toast("Preview failed: " + (e.code || e.message), true);
+  }
+  $("purgePreviewBtn").disabled = false;
+  $("purgePreviewBtn").textContent = "Preview matches";
+};
+
+$("purgeDeleteBtn").onclick = async () => {
+  if (!purgeTargets) { toast("Preview first.", true); return; }
+  const total = purgeTargets.lbDocIds.length + purgeTargets.ssIds.length;
+  if (total === 0) return;
+
+  const names = purgeTargets.names ?? [];
+  const nameList = names.length
+    ? names.map(n => `  • ${n}`).join("\n")
+    : "  (no display names found on these docs)";
+  const confirmMsg =
+    `Permanently delete these ${names.length} player${names.length === 1 ? "" : "s"}?\n\n` +
+    `${nameList}\n\n` +
+    `That's ${total} docs total (${purgeTargets.lbDocIds.length} leaderboard + ${purgeTargets.ssIds.length} submissions). This can't be undone.`;
+  if (!confirm(confirmMsg)) return;
+
+  $("purgeDeleteBtn").disabled = true;
+  $("purgeDeleteBtn").textContent = "Deleting…";
+  let done = 0, failed = 0;
+  try {
+    for (const docId of purgeTargets.lbDocIds) {
+      try { await deleteDoc(doc(db, "leaderboard", docId)); done++; }
+      catch (e) { failed++; console.error("lb delete failed", docId, e); }
+    }
+    for (const ssId of purgeTargets.ssIds) {
+      try { await deleteDoc(doc(db, "script_submissions", ssId)); done++; }
+      catch (e) { failed++; console.error("ss delete failed", ssId, e); }
+    }
+
+    // Optionally blacklist every pasted ID so they can't just resubmit.
+    if ($("purgeAlsoBan").checked) {
+      const ref = doc(db, "admin", "blacklist");
+      const snap = await getDoc(ref);
+      if (!snap.exists()) await setDoc(ref, { userIds: [], deviceIds: [], notes: {} });
+      for (const id of purgeTargets.ids) {
+        try { await updateDoc(ref, { userIds: arrayUnion(id) }); }
+        catch (e) { console.error("ban failed", id, e); }
+      }
+      await loadBlacklist();
+    }
+
+    toast(`Deleted ${done} docs${failed ? `, ${failed} failed (see console)` : ""}${$("purgeAlsoBan").checked ? ", IDs blacklisted" : ""}.`, failed > 0);
+    $("purgePreview").innerHTML = `<div class="muted">Purge complete. Deleted ${done}${failed ? `, ${failed} failed` : ""}. Re-preview to confirm they're gone.</div>`;
+    purgeTargets = null;
+    $("purgeDeleteBtn").textContent = "Delete all shown";
+  } catch (e) {
+    console.error(e);
+    toast("Purge failed: " + (e.code || e.message), true);
+    $("purgeDeleteBtn").disabled = false;
+    $("purgeDeleteBtn").textContent = "Delete all shown";
+  }
+};
 
 // ---------- Version config ----------
 async function loadConfig() {

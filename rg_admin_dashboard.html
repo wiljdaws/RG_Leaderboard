@@ -314,6 +314,26 @@ let lbDocs = [];   // [{id, data}]
 let ssDocs = new Map(); // sourceUserId -> data
 let blacklistData = { userIds: [], deviceIds: [], notes: {} };
 
+// Shared cache: full-collection fetches are the expensive reads (every doc =
+// one billed read). Scan and purge preview share one fetch; anything within
+// 60s reuses it instead of re-reading the world.
+let collectionsCache = null; // { lbSnapDocs, ssSnapDocs, at }
+async function loadCollections(force = false) {
+  if (!force && collectionsCache && Date.now() - collectionsCache.at < 60000) {
+    return collectionsCache;
+  }
+  const [lbSnap, ssSnap] = await Promise.all([
+    getDocs(collection(db, "leaderboard")),
+    getDocs(collection(db, "script_submissions")),
+  ]);
+  const lbSnapDocs = [];
+  lbSnap.forEach(d => lbSnapDocs.push({ id: d.id, data: d.data() }));
+  const ssSnapDocs = new Map();
+  ssSnap.forEach(d => ssSnapDocs.set(d.id, d.data()));
+  collectionsCache = { lbSnapDocs, ssSnapDocs, at: Date.now() };
+  return collectionsCache;
+}
+
 $("scanBtn").onclick = runScan;
 
 async function runScan() {
@@ -324,18 +344,14 @@ async function runScan() {
   $("scanBtn").disabled = true;
   $("scanBtn").textContent = "Scanning…";
   try {
-    const [lbSnap, ssSnap] = await Promise.all([
-      getDocs(collection(db, "leaderboard")),
-      getDocs(collection(db, "script_submissions")),
-    ]);
-    lbDocs = [];
-    lbSnap.forEach(d => lbDocs.push({ id: d.id, data: d.data() }));
-    ssDocs = new Map();
-    ssSnap.forEach(d => ssDocs.set(d.id, d.data()));
+    const cache = await loadCollections();
+    lbDocs = cache.lbSnapDocs;
+    ssDocs = cache.ssSnapDocs;
 
     const suspects = analyze(threshold, wrPct, wrMin);
     render(suspects);
-    toast(`Scanned ${lbDocs.length} leaderboard entries, ${ssDocs.size} submission records.`);
+    const age = Math.round((Date.now() - cache.at) / 1000);
+    toast(`Scanned ${lbDocs.length} leaderboard entries, ${ssDocs.size} submission records${age > 2 ? ` (cached ${age}s ago)` : ""}.`);
   } catch (e) {
     console.error(e);
     toast("Scan failed: " + (e.code || e.message), true);
@@ -601,24 +617,21 @@ $("purgePreviewBtn").onclick = async () => {
   $("purgePreviewBtn").disabled = true;
   $("purgePreviewBtn").textContent = "Scanning…";
   try {
-    const [lbSnap, ssSnap] = await Promise.all([
-      getDocs(collection(db, "leaderboard")),
-      getDocs(collection(db, "script_submissions")),
-    ]);
+    const cache = await loadCollections();
+    const lbSnapArr = cache.lbSnapDocs;
+    const ssSnapMap = cache.ssSnapDocs;
 
     let lbMatches = [];
     if (mode === "id") {
       const idSet = new Set(lines);
-      lbSnap.forEach(d => {
-        const data = d.data();
-        if (data.sourceUserId && idSet.has(data.sourceUserId)) lbMatches.push({ docId: d.id, ...data });
+      lbSnapArr.forEach(({ id, data }) => {
+        if (data.sourceUserId && idSet.has(data.sourceUserId)) lbMatches.push({ docId: id, ...data });
       });
     } else {
       // name mode: match leaderboard docs whose (tag-stripped) name is in the list
       const nameSet = new Set(lines.map(normName));
-      lbSnap.forEach(d => {
-        const data = d.data();
-        if (data.name && nameSet.has(normName(data.name))) lbMatches.push({ docId: d.id, ...data });
+      lbSnapArr.forEach(({ id, data }) => {
+        if (data.name && nameSet.has(normName(data.name))) lbMatches.push({ docId: id, ...data });
       });
     }
 
@@ -628,7 +641,7 @@ $("purgePreviewBtn").onclick = async () => {
     if (mode === "id") lines.forEach(id => idSet.add(id));
 
     const ssMatches = [];
-    ssSnap.forEach(d => { if (idSet.has(d.id)) ssMatches.push({ docId: d.id, ...d.data() }); });
+    ssSnapMap.forEach((data, id) => { if (idSet.has(id)) ssMatches.push({ docId: id, ...data }); });
 
     // Distinct display names for the confirm dialog.
     const nameSet = new Set();
@@ -721,6 +734,7 @@ $("purgeDeleteBtn").onclick = async () => {
     toast(`Deleted ${done} docs${failed ? `, ${failed} failed (console)` : ""}${$("purgeAlsoBan").checked ? ", accounts blacklisted" : ""}.`, failed > 0);
     $("purgePreview").innerHTML = `<div class="muted">Purge complete. Deleted ${done}${failed ? `, ${failed} failed` : ""}. Re-preview to confirm.</div>`;
     purgeTargets = null;
+    collectionsCache = null; // deletions happened -- next preview must re-fetch
     $("purgeDeleteBtn").textContent = "Delete all shown";
   } catch (e) {
     console.error(e);
@@ -733,14 +747,24 @@ $("purgeDeleteBtn").onclick = async () => {
 // ---------- Version config ----------
 async function loadConfig() {
   try {
-    const snap = await getDoc(doc(db, "admin", "config"));
-    if (snap.exists()) $("versionsInput").value = (snap.data().allowedVersions ?? []).join(", ");
+    // Version list lives on admin/blacklist now (shares a read with the
+    // blacklist check server-side). Fall back to legacy admin/config.
+    const snap = await getDoc(doc(db, "admin", "blacklist"));
+    if (snap.exists() && Array.isArray(snap.data().allowedVersions)) {
+      $("versionsInput").value = snap.data().allowedVersions.join(", ");
+      return;
+    }
+    const legacy = await getDoc(doc(db, "admin", "config"));
+    if (legacy.exists()) $("versionsInput").value = (legacy.data().allowedVersions ?? []).join(", ");
   } catch (e) { /* fine */ }
 }
 $("saveVersionsBtn").onclick = async () => {
   const versions = $("versionsInput").value.split(",").map(v => v.trim()).filter(Boolean);
   if (versions.length === 0) { toast("List at least one version — an empty list blocks everyone.", true); return; }
   try {
+    // Write to admin/blacklist (rules + v12.1 clients read this) AND to the
+    // legacy admin/config (v12.0 clients' update banner reads that path).
+    await setDoc(doc(db, "admin", "blacklist"), { allowedVersions: versions }, { merge: true });
     await setDoc(doc(db, "admin", "config"), { allowedVersions: versions }, { merge: true });
     toast(`Allowed versions: ${versions.join(", ")}`);
   } catch (e) {
